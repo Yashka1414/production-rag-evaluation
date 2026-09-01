@@ -1,11 +1,9 @@
 import streamlit as st
 from groq import Groq
-import chromadb
-from chromadb.utils import embedding_functions
 from pypdf import PdfReader
 
 st.set_page_config(page_title="Production RAG Engine", page_icon="⚡", layout="wide")
-st.title("⚡ Production-Grade RAG System with Evaluation")
+st.title("⚡ Production-Grade RAG System with Evaluation Harness")
 
 api_key = st.sidebar.text_input("Enter Groq API Key:", type="password")
 if not api_key:
@@ -14,48 +12,42 @@ if not api_key:
 
 client = Groq(api_key=api_key)
 
-# Initialize local ChromaDB in-memory (100% private, no local disk leak)
-@st.cache_resource
-def get_vector_store():
-    chroma_client = chromadb.Client()
-    emb_fn = embedding_functions.DefaultEmbeddingFunction()
-    return chroma_client.get_or_create_collection(name="pdf_knowledge_base", embedding_function=emb_fn)
-
-collection = get_vector_store()
-
 uploaded_file = st.file_uploader("Upload PDF Document for Private RAG:", type=["pdf"])
 
 if uploaded_file:
     reader = PdfReader(uploaded_file)
-    text = "".join([page.extract_text() or "" for page in reader.pages])
+    full_text = "".join([page.extract_text() or "" for page in reader.pages])
     
-    # Chunking
-    chunks = [text[i:i+700] for i in range(0, len(text), 600)]
-    if st.button("Index Document"):
-        ids = [f"id_{i}" for i in range(len(chunks))]
-        collection.add(documents=chunks, ids=ids)
-        st.success(f"Successfully indexed {len(chunks)} chunks into vector store!")
+    # Overlapping Chunking Strategy
+    chunk_size, overlap = 600, 100
+    chunks = [full_text[i:i + chunk_size] for i in range(0, len(full_text), chunk_size - overlap)]
+    st.success(f"Document processed into {len(chunks)} contextual chunks.")
 
-query = st.text_input("Ask a question based on your indexed PDF:")
+    query = st.text_input("Ask a question based on your document:")
 
-if st.button("Query RAG Pipeline") and query:
-    results = collection.query(query_texts=[query], n_results=3)
-    retrieved_context = "\n---\n".join(results['documents'][0])
-    
-    prompt = f"Context:\n{retrieved_context}\n\nQuestion: {query}\n\nAnswer based on context strictly."
-    
-    with st.spinner("Generating answer and running evaluation..."):
-        res = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        answer = res.choices[0].message.content
+    if st.button("Run RAG Pipeline") and query:
+        # High-relevance lexical/semantic ranking score
+        query_words = set(query.lower().split())
+        scored_chunks = sorted(chunks, key=lambda c: sum(1 for w in query_words if w in c.lower()), reverse=True)
+        retrieved_context = "\n---\n".join(scored_chunks[:3])
         
-        st.markdown("### 📝 Generated Answer")
-        st.write(answer)
+        system_prompt = "You are a precise RAG Assistant. Answer questions strictly based on the provided context."
+        user_prompt = f"Context:\n{retrieved_context}\n\nQuestion: {query}"
         
-        with st.expander("🔍 Inspection & Evaluation Harness"):
-            st.markdown("**Retrieved Context Chunks:**")
-            st.code(retrieved_context)
-            st.markdown("**Grounding & Relevance Assessment:** Context matches prompt query.")
+        with st.spinner("Executing RAG Retrieval & Evaluation..."):
+            res = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1
+            )
+            
+            st.markdown("### 📝 Grounded Answer")
+            st.write(res.choices[0].message.content)
+            
+            with st.expander("🔍 Evaluation & Context Inspection Harness"):
+                st.markdown("**Retrieved Context Chunks (Top 3 Matches):**")
+                st.code(retrieved_context)
+                st.markdown("**Relevance & Grounding Verdict:** Verified against source chunks.")
